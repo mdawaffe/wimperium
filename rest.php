@@ -10,6 +10,7 @@ class Wimperium_Rest {
 
 	var $endpoint = null;
 	var $response = null;
+	var $status   = 200;
 
 	var $endpoints = array();
 
@@ -66,6 +67,56 @@ class Wimperium_Rest {
 		}
 	}
 
+
+	function get_request_headers() {
+		if ( function_exists( 'getallheaders' ) ) {
+			return getallheaders();
+		}
+		
+		$headers = array();
+		
+		foreach ( $_SERVER as $key => $value ) {
+			if ( 'HTTP_' != substr( $key, 0, 5 ) ) {
+				continue;
+			}
+		
+			$key = strtolower( str_replace( '_', ' ', substr( $key, 5 ) ) );
+			$key = ucwords( $key );
+			$key = str_replcae( ' ', '-', $key );
+			$headers[$key] = stripslashes( $value );
+		}
+
+		return $headers;
+	}
+
+	function generate_cookie_authentication() {
+		$cookie = is_ssl() ? $_COOKIE[SECURE_AUTH_COOKIE] : $_COOKIE[AUTH_COOKIE];
+
+		return hash_hmac( 'md5', $cookie, wp_salt( get_called_class() ) );
+	}
+
+	// @todo hook to authenticate action
+	function cookie_authentication() {
+		$headers = $this->get_request_headers();
+		if ( ! isset( $headers['Authorization'] ) ) {
+			return false;
+		}
+
+		$authorization = trim( $headers['Authorization'] );
+
+		if ( ! preg_match( '#^X-WPCOOKIE\s+#i', $authorization, $matches ) ) {
+			return false;
+		}
+
+		$authorization = substr( $authorization, strlen( $matches[0] ) );
+
+		if ( $this->generate_cookie_authentication() !== $authorization ) {
+			return false;
+		}
+
+		return true;
+	}
+
 	function process() {
 		$endpoints = Wimperium_Rest_Endpoints::filter( $this->path );
 		if ( ! $endpoints ) {
@@ -78,35 +129,50 @@ class Wimperium_Rest {
 
 		$endpoint = $endpoints[$this->method];
 
-		$this->endpoint = new $endpoint;
+		if ( is_user_logged_in() && 'Wimperium_Rest_Proxy' !== $endpoint ) {
+			if ( ! $this->cookie_authentication() ) {
+				wp_set_current_user( 0 );
+			}
+		}
+	
+		$this->endpoint = new $endpoint( $this );
 
 		$this->response = $this->endpoint->process( $this->path, $this->query, $this->body );
 	}
 
-	function status() {
+	function status( $envelope = false ) {
 		if ( is_wp_error( $this->response ) ) {
 			$data = $this->response->get_error_data();
-			$status = isset( $data['code'] ) ? $data['code'] : 500;
+			$this->status = isset( $data['code'] ) ? $data['code'] : 500;
 		} else {
-			$status = 200;
+			$this->status = 200;
 		}
 
-		status_header( $status );
-		return $status;
+		if ( ! $envelope ) {
+			status_header( $this->status );
+		}
+
+		header( 'Content-Type: application/json' );
 	}
 
-	function json() {
+	function json( $envelope = false ) {
 		if ( is_wp_error( $this->response ) ) {
 			$json = (object) array(
 				'error' => $this->response->get_error_code(),
 				'error_message' => $this->response->get_error_message(),
 			);
-
-			return json_encode( $json );
+		} else {
+			$json = (object) $this->response;
 		}
 
-		
-		return json_encode( (object) $this->response );
+		if ( $envelope ) {
+			$json = (object) array(
+				'code' => $this->status,
+				'body' => $json,
+			);
+		}
+
+		return json_encode( $json );
 	}
 }
 
@@ -132,6 +198,12 @@ abstract class Wimperium_Rest_Endpoint {
 	static $method = 'GET';
 	static $path = '/';
 
+	protected $rest;
+
+	function __construct( Wimperium_Rest $rest ) {
+		$this->rest = $rest;
+	}
+
 	abstract function process( $path, array $query, $body = null );
 
 	static function register() {
@@ -149,6 +221,30 @@ abstract class Wimperium_Rest_Endpoint {
 	}
 }
 
+class Wimperium_Rest_Proxy extends Wimperium_Rest_Endpoint {
+	static $method = 'GET';
+	static $path = '/proxy';
+
+	function process( $path, array $query, $body = null ) {
+		$parsed_proxy_url = parse_url( admin_url( 'admin-post.php' ) );
+
+		if ( ! is_user_logged_in() || wp_validate_auth_cookie() !== get_current_user_id() ) {
+			setcookie( 'wimperium-rest', ' ', time() - YEAR_IN_SECONDS, $parsed_proxy_url['path'], $parsed_proxy_url['host'], is_ssl() );
+			exit;
+		}
+
+		$hmac = $this->rest->generate_cookie_authentication();
+
+		header_remove( 'X-Frame-Options' );
+
+		setcookie( 'wimperium-rest', $hmac, time() + WEEK_IN_SECONDS, $parsed_proxy_url['path'], $parsed_proxy_url['host'], is_ssl() );
+
+		require dirname( __FILE__ ) . '/proxy.php';
+		exit;
+	}
+}
+Wimperium_Rest_Proxy::register();
+
 class Wimperium_Rest_Post_Get extends Wimperium_Rest_Endpoint {
 	static $method = 'GET';
 	static $path = '/posts/(?<post_id>\d+|slug:[^/])';
@@ -164,10 +260,10 @@ class Wimperium_Rest_Post_Get extends Wimperium_Rest_Endpoint {
 			return $post_id;
 		}
 
-		if ( ctype_digit( $parsed['post_id'] ) ) {
-			$post_id = (int) $parsed['post_id'];
+		if ( ctype_digit( $post_id ) ) {
+			$post_id = (int) $post_id;
 		} else {
-			list( $noop, $post_slug ) = explode( ':', $parsed['post_id'] );
+			list( $noop, $post_slug ) = explode( ':', $post_id );
 
 			$post_slug = sanitize_title( $post_slug );
 			if ( !$post_slug ) {
@@ -193,11 +289,42 @@ class Wimperium_Rest_Post_Get extends Wimperium_Rest_Endpoint {
 			return new WP_Error( 'unknown_post', 'Unknown post', array( 'code' => 404 ) );
 		}
 
+		// @todo permissions
+
+		$globals = array_fill_keys( array( 'post', 'pages', 'page' ), '__unset__' );
+		foreach ( array_keys( $globals ) as $global ) {
+			if ( isset( $GLOBALS[$global] ) ) {
+				$globals[$global] = $GLOBALS[$global];
+			}
+		}
+
+		$GLOBALS['post'] = $post;
+		setup_postdata( $post );
+
+		$title = get_the_title();
+
+		$content = join( "\n\n", $GLOBALS['pages'] );
+		$content = preg_replace( '/<!--more(.*?)?-->/', '', $content );
+		$GLOBALS['pages'] = array( $content );
+		$GLOBALS['page']  = 1;
+
+		ob_start();
+		the_content();
+		$content = ob_get_clean();
+
+		foreach ( $globals as $global => $original_value ) {
+			if ( '__unset__' === $original_value ) {
+				unset( $GLOBALS[$global] );
+			} else {
+				$GLOBALS[$globals] = $original_value;
+			}
+		}
+
 		return (object) array(
 			'id'      => (int) $post->ID,
 			'slug'    => (string) $post->post_name,
-			'title'   => (string) $post->post_title,
-			'content' => (string) $post->post_content,
+			'title'   => (string) $title,
+			'content' => (string) $content,
 		);
 	}
 }
@@ -222,12 +349,16 @@ class Wimperium_Rest_Post_New extends Wimperium_Rest_Post_Get {
 	}
 
 	function process( $path, array $query, $body = null ) {
+		if ( ! current_user_can( 'publish_posts' ) ) {
+			return new WP_Error( 'cannot_publish_posts', 'Your account is not authorized to publish posts.', array( 'code' => 403 ) );
+		}
+
 		$body = $this->parse_body( $body );
-var_dump( $body );
-exit;
+
 		$post_id = wp_insert_post( (object) array(
 			'post_title'   => $body['title'],
 			'post_content' => $body['content'],
+			'post_status'  => 'publish',
 		), true );
 
 		return $this->get_post( $post_id );

@@ -18,12 +18,16 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 	function init_actions() {
 		$this->add_action( 'init' );
 		$this->add_action( 'admin_post_wimperium_rest' );
+		$this->add_action( 'admin_post_nopriv_wimperium_rest', 'admin_post_wimperium_rest' );
+		$this->add_action( 'wp_enqueue_scripts' );
+		$this->add_action( 'wp_print_styles' );
+		$this->add_action( 'wp_footer' );
 	}
 
 	function init_filters() {
 		$this->add_filter( 'posts_results' );
 		$this->add_filter( 'the_title', 1 );
-		$this->add_filter( 'the_content', 1 );
+		$this->add_filter( 'the_content', 11 );
 	}
 
 	function init() {
@@ -39,6 +43,20 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 		}
 
 		$this->default_prompt = __( "What's up?" );
+
+		$proxy_url = admin_url( 'admin-post.php?action=wimperium_rest&path=/proxy' );
+		$parsed_proxy_url = parse_url( $proxy_url );
+
+		wp_register_script( 'wimperium-rest', plugins_url( 'js/proxy-request.js', __FILE__ ), array( 'jquery' ), mt_rand(), true );
+		wp_localize_script( 'wimperium-rest', 'WimperiumRest', array(
+			'proxyOrigin' => $parsed_proxy_url['scheme'] . '://' . $parsed_proxy_url['host'],
+			'proxyURL'    => $proxy_url,
+		) );
+
+		// @todo, for same-origin requests, just use AJAX not proxy
+		wp_register_script( 'wimperium', plugins_url( 'js/wimperium.js', __FILE__ ), array( 'wimperium-rest' ), mt_rand(), true );
+
+		wp_register_style( 'wimperium-rest', plugins_url( 'css/style.css', __FILE__ ), array(), mt_rand() );
 	}
 
 	function register_post_type( $is_public ) {
@@ -92,8 +110,17 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 			return $posts;
 		}
 
-		array_unshift( $posts, $template_post );
+		array_unshift( $posts, $template_post, $template_post );
 		return $posts;
+	}
+
+	function wp_enqueue_scripts() {
+		wp_enqueue_script( 'wimperium-rest' );
+		wp_enqueue_script( 'wimperium' );
+	}
+
+	function wp_print_styles() {
+		wp_enqueue_style( 'wimperium-rest' );
 	}
 
 	function the_title( $title, $post_id ) {
@@ -119,9 +146,22 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 
 		ob_start();
 ?>
-<form action="" method="post">
-<textarea name="content" cols="50" rows="10"></textarea>
-<input type="submit" value="<?php esc_attr_e( 'Publish Post' ); ?>" />
+<form class="wimperium-post" action="" method="post">
+<p>
+	<label>
+		<span>Title</span>
+		<input type="text" class="title" name="title" placeholder="Title" />
+	</label>
+</p>
+
+<label>
+	<span>Post</span>
+	<textarea name="content" class="content" cols="50" rows="10" placeholder="Type your post here&hellip;"></textarea>
+</label>
+
+<p class="submit">
+	<input type="submit" value="<?php esc_attr_e( 'Publish Post' ); ?>" />
+</p>
 </form>
 <?php
 		$form = ob_get_clean();
@@ -129,13 +169,19 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 		return str_replace( '{{{content}}}', $form, $content );
 	}
 
+	function wp_footer() {
+		
+	}
+
 	function admin_post_wimperium_rest() {
 		require dirname( __FILE__ ) . '/rest.php';
 
+		$envelope = isset( $_GET['http_envelope'] ) && '1' === $_GET['http_envelope'];
+
 		$rest = new Wimperium_Rest();
 		$rest->process();
-		$rest->status();
-		die( $rest->json() );
+		$rest->status( $envelope );
+		die( $rest->json( $envelope ) );
 	}
 }
 

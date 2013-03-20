@@ -1,0 +1,17 @@
+.wimperium-post textarea, .wimperium-post input[type=text] {
+	width: 100%;
+}
+
+.wimperium-post .submit {
+	text-align: right;
+	margin-top: 1em;
+}
+
+.wimperium-post label span {
+	position: absolute;
+	left: -1000px;
+	top: auto;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+}
