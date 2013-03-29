@@ -21,13 +21,17 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 		$this->add_action( 'admin_post_nopriv_wimperium_rest', 'admin_post_wimperium_rest' );
 		$this->add_action( 'wp_enqueue_scripts' );
 		$this->add_action( 'wp_print_styles' );
-		$this->add_action( 'wp_footer' );
 	}
 
 	function init_filters() {
 		$this->add_filter( 'posts_results' );
 		$this->add_filter( 'the_title', 1 );
 		$this->add_filter( 'the_content', 11 );
+	}
+
+	function add_preview_filters() {
+		require dirname( __FILE__ ) . '/preview.php';
+		Wimperium_Preview::instance();
 	}
 
 	function init() {
@@ -63,15 +67,20 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 		register_post_type( self::POST_TYPE, array(
 			'public' => $is_public,
 			'exclude_from_search' => true,
-			'publicly_queryable' => false,
+			'publicly_queryable' => true,
 			'show_ui' => false,
 			'show_in_nav_menus' => false,
 			'rewrite' => false,
 			'can_export' => false,
-			'capability_type' => 'fnord',
+//			'capability_type' => 'fnord',
 			'supports' => array(
 				'title',
 				'post-formats',
+				'author',
+				'thumbnail',
+				'excerpt',
+				'trackbacks',
+				'comments',
 			),
 		) );
 	}
@@ -96,6 +105,10 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 			return $posts;
 		}
 
+		if ( $query->is_preview() ) {
+			$this->add_preview_filters();
+		}
+
 		if ( ! $query->is_home() ) {
 			return $posts;
 		}
@@ -110,7 +123,10 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 			return $posts;
 		}
 
-		array_unshift( $posts, $template_post, $template_post );
+		$template_post->post_type = 'post';
+
+		array_unshift( $posts, $template_post );
+
 		return $posts;
 	}
 
@@ -125,7 +141,7 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 
 	function the_title( $title, $post_id ) {
 		$post = get_post( $post_id );
-		if ( self::POST_TYPE !== $post->post_type ) {
+		if ( $this->template_post !== $post->ID ) {
 			return $title;
 		}
 
@@ -140,7 +156,7 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 
 	function the_content( $content ) {
 		$post = get_post();
-		if ( self::POST_TYPE !== $post->post_type ) {
+		if ( $this->template_post !== $post->ID ) {
 			return $content;
 		}
 
@@ -167,10 +183,6 @@ class Wimperium_Plugin extends MDAWaffe_Plugin_1 {
 		$form = ob_get_clean();
 
 		return str_replace( '{{{content}}}', $form, $content );
-	}
-
-	function wp_footer() {
-		
 	}
 
 	function admin_post_wimperium_rest() {
