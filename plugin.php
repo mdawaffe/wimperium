@@ -5,16 +5,17 @@
  */
 
 class MDAWaffe_Plugin_1 {
-	protected static $instance;
+	protected static $instances = array();
 	protected $_class;
 
 	static function instance() {
-		if ( ! self::$instance ) {
-			$class = get_called_class();
-			self::$instance = new $class;
+		$class = get_called_class();
+		
+		if ( ! self::$instances[$class] ) {
+			self::$instances[$class] = new $class;
 		}
 
-		return self::$instance;
+		return self::$instances[$class];
 	}
 
 	protected function __construct() {
