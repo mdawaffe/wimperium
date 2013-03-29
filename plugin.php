@@ -11,7 +11,7 @@ class MDAWaffe_Plugin_1 {
 	static function instance() {
 		$class = get_called_class();
 		
-		if ( ! self::$instances[$class] ) {
+		if ( ! isset( self::$instances[$class] ) ) {
 			self::$instances[$class] = new $class;
 		}
 
